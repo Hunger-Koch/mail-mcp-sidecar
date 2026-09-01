@@ -1,8 +1,8 @@
 # mail-mcp-sidecar
 
-HTTP-sidecar for the Hunger & Koch mail agent **Der Koch**.
+HTTP sidecar for the Hunger & Koch mail agent **Der Koch**.
 
-The container uses [`tecnologicachile/mail-mcp`](https://github.com/tecnologicachile/mail-mcp) for IMAP access and adds a small MCP proxy in front of it. The proxy keeps short-lived inbox snapshots in RAM so an LLM does not need to retain cursor state or 100 mail summaries in its conversation context.
+The container uses [`tecnologicachile/mail-mcp`](https://github.com/tecnologicachile/mail-mcp) for IMAP access and adds a small MCP proxy in front of it. The proxy keeps short-lived mailbox snapshots in RAM so an LLM does not need to retain IMAP cursor state or a complete batch in conversation context.
 
 There is **no PostgreSQL, Redis, database, Supergateway, or additional Docker service**. Snapshot state exists only in memory inside the existing `mail-mcp-sidecar` container and expires automatically.
 
@@ -25,38 +25,37 @@ IMAP / STRATO
 
 Only the Node proxy listens on a TCP port. `mail-mcp` is spawned directly as a local stdio child process and has no HTTP listener of its own.
 
-## Why snapshots?
+## Batch snapshot flow
 
-A 100-message inbox sort previously required the agent to paginate through IMAP and retain all search results in conversation context. That conflicts with context pruning and causes repeated tool results, reconstruction work, and high token usage.
+The caller decides how many messages belong to a batch. The sidecar only enforces its API bounds; it does not define the operational batch size.
 
-The proxy moves deterministic state handling out of the LLM:
-
-1. `imap_create_snapshot` paginates internally and captures up to 100 messages.
-2. `imap_get_snapshot_chunk` returns only one small chunk, normally 20 messages.
-3. The model classifies that chunk.
-4. `imap_apply_snapshot_actions` validates one classification per message and performs the allowed mutations.
-5. `imap_release_snapshot` frees the snapshot early; otherwise the TTL removes it automatically.
+1. `imap_create_snapshot` captures the requested newest messages and handles pagination/deduplication internally.
+2. `imap_get_snapshot_chunk` returns one bounded chunk at a time.
+3. The model classifies from sender, subject and snippet.
+4. Only when those fields are insufficient, `imap_get_snapshot_message` returns a bounded text body for one message in the current chunk.
+5. `imap_apply_snapshot_actions` validates one classification per message and performs the allowed mutations.
+6. `imap_release_snapshot` frees the snapshot early; otherwise the TTL removes it automatically.
 
 ## Snapshot tools
 
 ### `imap_create_snapshot`
 
-Typical input:
+Example input:
 
 ```json
 {
   "account_id": "hallo",
   "mailbox": "INBOX",
-  "limit": 100,
+  "limit": 80,
   "chunk_size": 20,
   "include_snippet": true,
   "snippet_max_chars": 300
 }
 ```
 
-The proxy calls upstream `imap_search_messages` itself, using pages of up to 50 messages, reusing the opaque cursor and deduplicating by stable `message_id`.
+`limit` is supplied by the caller/job. The proxy calls upstream `imap_search_messages` itself using pages of up to 50 messages, reuses the opaque cursor and deduplicates by stable `message_id`.
 
-The response contains only snapshot metadata such as `snapshot_id`, `message_count`, and `chunk_count`.
+The response contains only snapshot metadata such as `snapshot_id`, `message_count` and `chunk_count`.
 
 ### `imap_get_snapshot_chunk`
 
@@ -78,6 +77,30 @@ Returns only the messages for that chunk with bounded fields:
 - `subject`
 - `flags`
 - `snippet`
+
+### `imap_get_snapshot_message`
+
+Use only when the summary fields are not sufficient to classify one message.
+
+```json
+{
+  "snapshot_id": "...",
+  "chunk": 1,
+  "message_id": "imap:hallo:INBOX:...",
+  "body_max_chars": 3000
+}
+```
+
+Guardrails:
+
+- the message must belong to the specified snapshot chunk
+- the chunk must still be unprocessed
+- text body only; no HTML or attachment extraction
+- curated headers only
+- default body limit: 3,000 characters
+- hard body limit: 5,000 characters
+
+This keeps body loading selective instead of putting every message body into the LLM context.
 
 ### `imap_apply_snapshot_actions`
 
@@ -143,7 +166,7 @@ For other mail workflows the proxy currently exposes a small set of upstream too
 - `imap_bulk_move`
 - `imap_bulk_update_flags`
 
-For the 100-mail sorter, prefer only the four snapshot tools so its invariants cannot be bypassed accidentally.
+For batch sorting, prefer the snapshot tools so snapshot scope and mutation invariants cannot be bypassed accidentally.
 
 SMTP, delete operations, mailbox creation/deletion/rename, and raw-message tools are not exposed by the proxy.
 
@@ -169,18 +192,6 @@ MAIL_IMAP_HALLO_PASS_FILE=/run/secrets/strato_hallo
 
 The entrypoint loads the secret into the sidecar environment. During startup the Node proxy immediately spawns the native `mail-mcp` stdio child with those credentials, then removes `MAIL_IMAP_*_PASS` variables from its own long-lived process environment. Hermes never receives the password.
 
-Example STRATO configuration:
-
-```yaml
-environment:
-  MAIL_IMAP_WRITE_ENABLED: 'true'
-  MAIL_IMAP_HALLO_HOST: 'imap.strato.de'
-  MAIL_IMAP_HALLO_PORT: '993'
-  MAIL_IMAP_HALLO_SECURE: 'true'
-  MAIL_IMAP_HALLO_USER: 'hallo@example.com'
-  MAIL_IMAP_HALLO_PASS_FILE: '/run/secrets/strato_hallo'
-```
-
 ## Docker / Coolify
 
 No second service is required. Continue deploying this repository as the existing `mail-mcp` service.
@@ -192,9 +203,7 @@ expose:
   - '8000'
 ```
 
-Do not add a public `ports:` mapping.
-
-Hermes continues to use the same endpoint:
+Hermes continues to use:
 
 ```text
 http://mail-mcp:8000/mcp
@@ -206,26 +215,16 @@ Health endpoint:
 http://mail-mcp:8000/healthz
 ```
 
-## Build
-
-```bash
-docker build -t mail-mcp-sidecar .
-```
-
-The image contains:
-
-- `mail-mcp` 0.4.9
-- Node.js MCP proxy
-- in-memory snapshot store
-
-## Suggested sorter flow
+## Generic sorter flow
 
 ```text
-imap_create_snapshot(limit=100, chunk_size=20)
+imap_create_snapshot(limit=<job batch size>, chunk_size<=20)
 
 for chunk 1..chunk_count:
     imap_get_snapshot_chunk(snapshot_id, chunk)
-    classify only this chunk
+    classify from summary fields
+    for genuinely ambiguous messages only:
+        imap_get_snapshot_message(snapshot_id, chunk, message_id)
     imap_apply_snapshot_actions(snapshot_id, chunk, actions)
 
 imap_release_snapshot(snapshot_id)

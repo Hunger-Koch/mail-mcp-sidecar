@@ -15,9 +15,6 @@ RUN curl --proto '=https' --tlsv1.2 -LsSf \
     && cp /root/.cargo/bin/mail-mcp /usr/local/bin/mail-mcp \
     && chmod 0755 /usr/local/bin/mail-mcp
 
-RUN npm install --global supergateway@3.4.3 \
-    && npm cache clean --force
-
 WORKDIR /app
 
 COPY package.json ./
@@ -31,7 +28,6 @@ RUN chmod 0755 /usr/local/bin/entrypoint.sh
 
 ENV MAIL_IMAP_WRITE_ENABLED=true
 ENV MAIL_SMTP_WRITE_ENABLED=false
-ENV MAIL_MCP_UPSTREAM_URL=http://127.0.0.1:8001/mcp
 ENV SNAPSHOT_TTL_SECONDS=1800
 ENV PORT=8000
 

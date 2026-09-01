@@ -1,8 +1,14 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-const upstreamUrl = process.env.MAIL_MCP_UPSTREAM_URL ?? 'http://127.0.0.1:8001/mcp';
 let clientPromise;
+let transport;
+
+function childEnvironment() {
+  return Object.fromEntries(
+    Object.entries(process.env).filter(([, value]) => typeof value === 'string'),
+  );
+}
 
 function parseToolResult(result) {
   if (result?.structuredContent && typeof result.structuredContent === 'object') {
@@ -33,8 +39,21 @@ function assertComplete(name, data) {
 
 async function connect() {
   const client = new Client({ name: 'hk-mail-snapshot-proxy', version: '1.0.0' });
-  const transport = new StreamableHTTPClientTransport(new URL(upstreamUrl));
+  transport = new StdioClientTransport({
+    command: '/usr/local/bin/mail-mcp',
+    args: [],
+    env: childEnvironment(),
+    stderr: 'inherit',
+  });
+
   await client.connect(transport);
+
+  // mail-mcp has inherited its credentials. Remove password values from the
+  // long-lived Node process environment immediately afterwards.
+  for (const key of Object.keys(process.env)) {
+    if (/^MAIL_IMAP_.*_PASS$/.test(key)) delete process.env[key];
+  }
+
   return client;
 }
 
@@ -46,6 +65,12 @@ export async function getUpstreamClient() {
     });
   }
   return clientPromise;
+}
+
+export async function closeUpstreamClient() {
+  if (transport) await transport.close();
+  transport = undefined;
+  clientPromise = undefined;
 }
 
 export async function callMailTool(name, args = {}) {

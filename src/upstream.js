@@ -20,6 +20,17 @@ function parseToolResult(result) {
   }
 }
 
+function assertComplete(name, data) {
+  if (!data || typeof data !== 'object') return;
+  if (data.status !== 'failed' && data.status !== 'partial') return;
+
+  const issueText = Array.isArray(data.issues)
+    ? data.issues.map((issue) => issue?.message ?? issue?.detail ?? JSON.stringify(issue)).join('; ')
+    : '';
+
+  throw new Error(`${name} returned ${data.status}${issueText ? `: ${issueText}` : ''}`);
+}
+
 async function connect() {
   const client = new Client({ name: 'hk-mail-snapshot-proxy', version: '1.0.0' });
   const transport = new StreamableHTTPClientTransport(new URL(upstreamUrl));
@@ -44,5 +55,8 @@ export async function callMailTool(name, args = {}) {
     const message = result?.content?.find?.((item) => item?.type === 'text')?.text ?? `${name} failed`;
     throw new Error(message);
   }
-  return parseToolResult(result);
+
+  const data = parseToolResult(result);
+  assertComplete(name, data);
+  return data;
 }

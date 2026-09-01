@@ -284,6 +284,60 @@ function registerSnapshotTools(server) {
 
   registerTool(
     server,
+    'imap_get_snapshot_message',
+    {
+      description: 'Read a bounded text body for one message that belongs to an unprocessed snapshot chunk. Use only when sender, subject, and snippet are insufficient for classification.',
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      inputSchema: {
+        snapshot_id: z.string().uuid(),
+        chunk: z.number().int().min(1),
+        message_id: z.string(),
+        body_max_chars: z.number().int().min(100).max(5_000).default(3_000),
+      },
+    },
+    async ({ snapshot_id, chunk, message_id, body_max_chars }) => {
+      if (isChunkProcessed(snapshot_id, chunk)) {
+        throw new Error(`Snapshot chunk ${chunk} has already been processed`);
+      }
+
+      const { snapshot, messages } = getSnapshotChunk(snapshot_id, chunk);
+      const summary = messages.find((message) => message.message_id === message_id);
+      if (!summary) {
+        throw new Error(`Message ${message_id} is not part of snapshot chunk ${chunk}`);
+      }
+
+      const detail = await callMailTool('imap_get_message', {
+        account_id: snapshot.accountId,
+        message_id,
+        body_max_chars,
+        include_headers: true,
+        include_all_headers: false,
+        include_html: false,
+        extract_attachment_text: false,
+      });
+      const message = detail?.message ?? detail;
+
+      return {
+        status: 'ok',
+        snapshot_id,
+        chunk,
+        message: {
+          message_id: summary.message_id,
+          date: message?.date ?? summary.date,
+          from: message?.from ?? summary.from,
+          to: message?.to,
+          cc: message?.cc,
+          subject: message?.subject ?? summary.subject,
+          flags: Array.isArray(message?.flags) ? message.flags : summary.flags,
+          headers: message?.headers,
+          body_text: message?.body_text,
+        },
+      };
+    },
+  );
+
+  registerTool(
+    server,
     'imap_apply_snapshot_actions',
     {
       description: 'Apply one classification per message in a snapshot chunk. The sidecar enforces destination and read-state invariants for the inbox sorter.',
@@ -463,7 +517,7 @@ function registerSnapshotTools(server) {
 function createMcpServer() {
   const server = new McpServer({
     name: 'hunger-koch-mail-mcp-sidecar',
-    version: '1.1.0',
+    version: '1.2.0',
   });
 
   registerSnapshotTools(server);

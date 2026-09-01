@@ -2,9 +2,9 @@
 
 HTTP-sidecar for the Hunger & Koch mail agent **Der Koch**.
 
-The container still uses [`tecnologicachile/mail-mcp`](https://github.com/tecnologicachile/mail-mcp) for IMAP access, but adds a small MCP proxy in front of it. The proxy keeps short-lived inbox snapshots in RAM so an LLM does not need to retain cursor state or 100 mail summaries in its conversation context.
+The container uses [`tecnologicachile/mail-mcp`](https://github.com/tecnologicachile/mail-mcp) for IMAP access and adds a small MCP proxy in front of it. The proxy keeps short-lived inbox snapshots in RAM so an LLM does not need to retain cursor state or 100 mail summaries in its conversation context.
 
-There is **no PostgreSQL, Redis, database, or additional Docker service**. Snapshot state exists only in memory inside the existing `mail-mcp-sidecar` container and expires automatically.
+There is **no PostgreSQL, Redis, database, Supergateway, or additional Docker service**. Snapshot state exists only in memory inside the existing `mail-mcp-sidecar` container and expires automatically.
 
 ## Architecture
 
@@ -15,19 +15,15 @@ Der Koch / Hermes
        v
 H&K snapshot proxy (Node.js)
        |
-       | MCP / HTTP localhost:8001
+       | MCP / stdio
        v
-Supergateway
-       |
-       | stdio
-       v
-mail-mcp 0.4.9
+mail-mcp 0.4.9 child process
        |
        v
 IMAP / STRATO
 ```
 
-Only port `8000` is exposed to the Docker network. The upstream `mail-mcp` endpoint listens only inside the container.
+Only the Node proxy listens on a TCP port. `mail-mcp` is spawned directly as a local stdio child process and has no HTTP listener of its own.
 
 ## Why snapshots?
 
@@ -171,7 +167,7 @@ Passwords should be mounted as files:
 MAIL_IMAP_HALLO_PASS_FILE=/run/secrets/strato_hallo
 ```
 
-The entrypoint loads the secret, starts the internal `mail-mcp`/Supergateway process, and then removes `MAIL_IMAP_*_PASS` variables before starting the Node proxy. Hermes never receives the password.
+The entrypoint loads the secret into the sidecar environment. During startup the Node proxy immediately spawns the native `mail-mcp` stdio child with those credentials, then removes `MAIL_IMAP_*_PASS` variables from its own long-lived process environment. Hermes never receives the password.
 
 Example STRATO configuration:
 
@@ -204,12 +200,6 @@ Hermes continues to use the same endpoint:
 http://mail-mcp:8000/mcp
 ```
 
-The internal upstream URL defaults to:
-
-```text
-http://127.0.0.1:8001/mcp
-```
-
 Health endpoint:
 
 ```text
@@ -225,7 +215,6 @@ docker build -t mail-mcp-sidecar .
 The image contains:
 
 - `mail-mcp` 0.4.9
-- Supergateway 3.4.3
 - Node.js MCP proxy
 - in-memory snapshot store
 

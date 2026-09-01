@@ -18,12 +18,22 @@ RUN curl --proto '=https' --tlsv1.2 -LsSf \
 RUN npm install --global supergateway@3.4.3 \
     && npm cache clean --force
 
+WORKDIR /app
+
+COPY package.json ./
+RUN npm install --omit=dev \
+    && npm cache clean --force
+
+COPY src ./src
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
 
 ENV MAIL_IMAP_WRITE_ENABLED=true
 ENV MAIL_SMTP_WRITE_ENABLED=false
+ENV MAIL_MCP_UPSTREAM_URL=http://127.0.0.1:8001/mcp
+ENV SNAPSHOT_TTL_SECONDS=1800
+ENV PORT=8000
 
 EXPOSE 8000
 

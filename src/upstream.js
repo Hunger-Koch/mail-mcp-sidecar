@@ -37,6 +37,74 @@ function assertComplete(name, data) {
   throw new Error(`${name} returned ${data.status}${issueText ? `: ${issueText}` : ''}`);
 }
 
+function decodeHtmlEntities(text) {
+  return text
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, value) => String.fromCodePoint(Number(value)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, value) => String.fromCodePoint(Number.parseInt(value, 16)));
+}
+
+function htmlToText(html, maxChars) {
+  if (typeof html !== 'string' || html.length === 0) return null;
+
+  const text = decodeHtmlEntities(
+    html
+      .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+      .replace(/<\/(?:p|div|section|article|header|footer|main|aside|h[1-6]|li|tr|table|blockquote)>|<br\s*\/?>/gi, '\n')
+      .replace(/<[^>]+>/g, ' '),
+  )
+    .replace(/\r/g, '')
+    .replace(/[\t ]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  if (!text) return null;
+  return text.slice(0, maxChars);
+}
+
+async function invokeTool(client, name, args) {
+  const result = await client.callTool({ name, arguments: args });
+  if (result?.isError) {
+    const message = result?.content?.find?.((item) => item?.type === 'text')?.text ?? `${name} failed`;
+    throw new Error(message);
+  }
+
+  const data = parseToolResult(result);
+  assertComplete(name, data);
+  return data;
+}
+
+function withHtmlBodyFallback(data, fallbackText) {
+  if (!fallbackText) return data;
+
+  if (data?.message && typeof data.message === 'object') {
+    const { body_html: _bodyHtml, ...message } = data.message;
+    return {
+      ...data,
+      message: {
+        ...message,
+        body_text: fallbackText,
+      },
+    };
+  }
+
+  if (data && typeof data === 'object') {
+    const { body_html: _bodyHtml, ...rest } = data;
+    return {
+      ...rest,
+      body_text: fallbackText,
+    };
+  }
+
+  return data;
+}
+
 async function connect() {
   const client = new Client({ name: 'hk-mail-snapshot-proxy', version: '1.0.0' });
   transport = new StdioClientTransport({
@@ -75,14 +143,22 @@ export async function closeUpstreamClient() {
 
 export async function callMailTool(name, args = {}) {
   const client = await getUpstreamClient();
-  const result = await client.callTool({ name, arguments: args });
-  if (result?.isError) {
-    const message = result?.content?.find?.((item) => item?.type === 'text')?.text ?? `${name} failed`;
-    throw new Error(message);
+  const data = await invokeTool(client, name, args);
+
+  // mail-mcp may return no body_text for HTML-only messages. For callers that
+  // explicitly requested no HTML, retry once with sanitized HTML enabled,
+  // convert it locally to bounded plain text, and never expose the HTML.
+  if (name === 'imap_get_message' && args.include_html === false) {
+    const message = data?.message ?? data;
+    if (!message?.body_text) {
+      const retryData = await invokeTool(client, name, { ...args, include_html: true });
+      const retryMessage = retryData?.message ?? retryData;
+      const maxChars = Number.isInteger(args.body_max_chars) ? args.body_max_chars : 20_000;
+      const fallbackText = htmlToText(retryMessage?.body_html, maxChars);
+      if (fallbackText) return withHtmlBodyFallback(retryData, fallbackText);
+    }
   }
 
-  const data = parseToolResult(result);
-  assertComplete(name, data);
   return data;
 }
 

@@ -85,3 +85,7 @@ export async function callMailTool(name, args = {}) {
   assertComplete(name, data);
   return data;
 }
+
+// Fail startup if the native mail-mcp process cannot be spawned/initialized,
+// and scrub IMAP password variables before the HTTP proxy starts listening.
+await getUpstreamClient();

@@ -232,13 +232,20 @@ export async function startIdleListener({ callMailTool }) {
     if (!Number.isInteger(lastUid) || !Number.isInteger(expectedUidValidity)) return;
 
     const startUid = lastUid + 1;
-    const uids = await client.search({ uid: `${startUid}:*` }, { uid: true });
-    const fresh = (Array.isArray(uids) ? uids : [])
-      .map((uid) => Number(uid))
-      .filter((uid) => Number.isInteger(uid) && uid >= startUid)
-      .sort((a, b) => a - b);
+    const discovered = new Set();
 
+    // UID SEARCH on some IMAP4rev2 servers can yield an empty parsed result even
+    // when the UID exists. UID FETCH returns the authoritative UID directly and
+    // does not mark the message as read. Filtering is required because an IMAP
+    // range like "N:*" may include the current highest UID when N is above it.
+    for await (const message of client.fetch(`${startUid}:*`, { uid: true }, { uid: true })) {
+      const uid = Number(message?.uid);
+      if (Number.isInteger(uid) && uid >= startUid) discovered.add(uid);
+    }
+
+    const fresh = [...discovered].sort((a, b) => a - b);
     if (fresh.length === 0) return;
+
     for (const uid of fresh) {
       pending.set(uidKey(expectedUidValidity, uid), { uidValidity: expectedUidValidity, uid });
       lastUid = Math.max(lastUid, uid);
@@ -298,16 +305,9 @@ export async function startIdleListener({ callMailTool }) {
     const heartbeat = setInterval(() => {
       if (heartbeatRunning || !client.usable || !client.mailbox) return;
       heartbeatRunning = true;
-      void (async () => {
-        try {
-          await client.noop();
-          await queueScan(client);
-        } catch (error) {
-          console.error('[imap-idle] heartbeat failed', error);
-        } finally {
-          heartbeatRunning = false;
-        }
-      })();
+      void queueScan(client).finally(() => {
+        heartbeatRunning = false;
+      });
     }, config.heartbeatMs);
 
     try {

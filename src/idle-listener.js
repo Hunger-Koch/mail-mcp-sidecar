@@ -263,7 +263,7 @@ export async function startIdleListener({ callMailTool }) {
       auth: { user: config.user, pass: config.password },
       logger: false,
       disableAutoIdle: true,
-      maxIdleTime: config.heartbeatMs,
+      maxIdleTime: 4 * 60 * 1000,
     });
     activeClient = client;
 
@@ -294,13 +294,30 @@ export async function startIdleListener({ callMailTool }) {
     });
     client.on('error', (error) => console.error('[imap-idle] connection error', error));
 
-    while (client.usable && client.mailbox) {
-      await client.idle();
-      if (!client.usable || !client.mailbox) break;
-      await queueScan(client);
-    }
+    let heartbeatRunning = false;
+    const heartbeat = setInterval(() => {
+      if (heartbeatRunning || !client.usable || !client.mailbox) return;
+      heartbeatRunning = true;
+      void (async () => {
+        try {
+          await client.noop();
+          await queueScan(client);
+        } catch (error) {
+          console.error('[imap-idle] heartbeat failed', error);
+        } finally {
+          heartbeatRunning = false;
+        }
+      })();
+    }, config.heartbeatMs);
 
-    activeClient = null;
+    try {
+      while (client.usable && client.mailbox) {
+        await client.idle();
+      }
+    } finally {
+      clearInterval(heartbeat);
+      activeClient = null;
+    }
   }
 
   while (true) {

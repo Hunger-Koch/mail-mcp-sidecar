@@ -117,7 +117,9 @@ async function connect() {
   await client.connect(transport);
 
   // mail-mcp has inherited its credentials. Remove password values from the
-  // long-lived Node process environment immediately afterwards.
+  // long-lived Node process environment immediately afterwards. *_PASS_FILE
+  // paths remain available so the optional IDLE watcher can read the mounted
+  // secret directly without re-exposing the password through process.env.
   for (const key of Object.keys(process.env)) {
     if (/^MAIL_IMAP_.*_PASS$/.test(key)) delete process.env[key];
   }
@@ -165,3 +167,11 @@ export async function callMailTool(name, args = {}) {
 // Fail startup if the native mail-mcp process cannot be spawned/initialized,
 // and scrub IMAP password variables before the HTTP proxy starts listening.
 await getUpstreamClient();
+
+// The listener is strictly opt-in. Importing it after the upstream child is
+// ready keeps all existing MCP behavior unchanged when MAIL_IDLE_ENABLED is
+// unset/false, while still sharing this process' in-memory snapshot store.
+const { startIdleListener } = await import('./idle-listener.js');
+startIdleListener({ callMailTool }).catch((error) => {
+  console.error('[imap-idle] listener stopped unexpectedly', error);
+});

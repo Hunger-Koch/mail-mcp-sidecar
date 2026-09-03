@@ -265,7 +265,7 @@ export async function startIdleListener({ callMailTool }) {
     activeClient = client;
 
     await client.connect();
-    const opened = await client.mailboxOpen(config.mailbox);
+    const opened = await client.mailboxOpen(config.mailbox, { readOnly: true });
     const uidValidity = Number(opened.uidValidity);
     const highestExistingUid = Math.max(0, Number(opened.uidNext ?? 1) - 1);
 

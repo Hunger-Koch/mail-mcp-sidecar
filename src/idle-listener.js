@@ -148,6 +148,7 @@ async function loadConfig() {
     port: envInt(`${prefix}PORT`, 993, 1, 65535),
     secure: envBool(`${prefix}SECURE`, true),
     debounceMs: envInt('MAIL_IDLE_DEBOUNCE_SECONDS', 120, 30, 900) * 1000,
+    heartbeatMs: envInt('MAIL_IDLE_HEARTBEAT_SECONDS', 30, 10, 120) * 1000,
     reconnectMaxMs: envInt('MAIL_IDLE_RECONNECT_MAX_SECONDS', 60, 5, 600) * 1000,
     chunkSize: envInt('MAIL_IDLE_CHUNK_SIZE', 20, 1, 50),
     snippetMaxChars: envInt('MAIL_IDLE_SNIPPET_MAX_CHARS', 300, 50, 500),
@@ -262,7 +263,7 @@ export async function startIdleListener({ callMailTool }) {
       auth: { user: config.user, pass: config.password },
       logger: false,
       disableAutoIdle: true,
-      maxIdleTime: 4 * 60 * 1000,
+      maxIdleTime: config.heartbeatMs,
     });
     activeClient = client;
 
@@ -276,7 +277,7 @@ export async function startIdleListener({ callMailTool }) {
     if (expectedUidValidity == null) {
       expectedUidValidity = uidValidity;
       lastUid = highestExistingUid;
-      console.log(`[imap-idle] watching ${config.accountId}/${config.mailbox}; baseline UID=${lastUid}; debounce=${config.debounceMs / 1000}s`);
+      console.log(`[imap-idle] watching ${config.accountId}/${config.mailbox}; baseline UID=${lastUid}; debounce=${config.debounceMs / 1000}s; heartbeat=${config.heartbeatMs / 1000}s`);
     } else if (expectedUidValidity !== uidValidity) {
       console.warn(`[imap-idle] UIDVALIDITY changed ${expectedUidValidity} -> ${uidValidity}; resetting listener baseline`);
       expectedUidValidity = uidValidity;

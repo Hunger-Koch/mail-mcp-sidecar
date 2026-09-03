@@ -4,6 +4,9 @@ set -eu
 # Supports variables such as:
 # MAIL_IMAP_OFFICE_PASS_FILE=/run/secrets/strato_office
 # and exposes the file contents only inside this sidecar process tree.
+# Keep the *_PASS_FILE path available to the long-lived Node process so the
+# optional IMAP IDLE watcher can read the mounted secret without retaining the
+# password itself in process.env after the upstream mail-mcp child starts.
 
 for var_name in $(env | cut -d= -f1 | grep '^MAIL_IMAP_.*_PASS_FILE$' || true); do
     file_path="$(printenv "$var_name")"
@@ -17,7 +20,6 @@ for var_name in $(env | cut -d= -f1 | grep '^MAIL_IMAP_.*_PASS_FILE$' || true); 
     secret_value="$(cat "$file_path")"
 
     export "$target_var=$secret_value"
-    unset "$var_name"
 done
 
 # SMTP remains disabled regardless of external configuration.

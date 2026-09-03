@@ -251,6 +251,7 @@ export async function startIdleListener({ callMailTool }) {
     scanChain = scanChain
       .then(() => scanForNewUids(client))
       .catch((error) => console.error('[imap-idle] UID scan failed', error));
+    return scanChain;
   }
 
   async function connectOnce() {
@@ -260,6 +261,7 @@ export async function startIdleListener({ callMailTool }) {
       secure: config.secure,
       auth: { user: config.user, pass: config.password },
       logger: false,
+      disableAutoIdle: true,
       maxIdleTime: 4 * 60 * 1000,
     });
     activeClient = client;
@@ -283,13 +285,20 @@ export async function startIdleListener({ callMailTool }) {
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = null;
     } else if (highestExistingUid > lastUid) {
-      queueScan(client);
+      await queueScan(client);
     }
 
-    client.on('exists', () => queueScan(client));
+    client.on('exists', () => {
+      void queueScan(client);
+    });
     client.on('error', (error) => console.error('[imap-idle] connection error', error));
 
-    await new Promise((resolve) => client.once('close', resolve));
+    while (client.usable && client.mailbox) {
+      await client.idle();
+      if (!client.usable || !client.mailbox) break;
+      await queueScan(client);
+    }
+
     activeClient = null;
   }
 
